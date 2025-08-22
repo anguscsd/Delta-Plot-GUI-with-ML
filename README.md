@@ -54,3 +54,5 @@ Before running the application, ensure you have the following installed:
   ```bash
   pip install wxPython pandas numpy matplotlib
 
+# R Script fot ML
+currently a work in progress...
