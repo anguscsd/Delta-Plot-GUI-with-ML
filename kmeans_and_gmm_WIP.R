@@ -1,6 +1,6 @@
 # ========================= USER INPUT =========================
-train_folder <- "PATH?/TO/TRAINING_DATA"   # folder of CSVs (first col = repeat length, col 'delta') (currently 8/11 datasets)
-test_folder  <- "PATH?/TO/TEST_DATA"       # folder of CSVs for evaluation; can equal train_folder (currently 3/11 datasets)
+train_folder <- "/Users/angusdixon/masters/met591_diss/all_data/ML0708/training_data"   # folder of CSVs (first col = repeat length, col 'delta') (currently 8/11 datasets)
+test_folder  <- "/Users/angusdixon/masters/met591_diss/all_data/ML0708/test_data"       # folder of CSVs for evaluation; can equal train_folder (currently 3/11 datasets)
 
 method        <- "gmm"            # "gmm" (mclust) or "kmeans"
 K             <- 3                # used if auto_select_K = FALSE
@@ -15,9 +15,9 @@ set.seed(42)
 # ========================= SETUP ==============================
 pkgs <- c("tidyverse","ggplot2","zoo","pROC","patchwork","scales","readr","mclust")
 for (p in pkgs) if (!requireNamespace(p, quietly = TRUE)) install.packages(p)
-invisible(lapply(pkgs, library, character.only = TRUE))
+invisible(lapply(pkgs, library, character.only = TRUE)) # install packages
 
-stopifnot(dir.exists(train_folder))
+stopifnot(dir.exists(train_folder)) # stop if test or train folder doesnt exist
 stopifnot(dir.exists(test_folder))
 
 train_files <- list.files(train_folder, pattern="\\.csv$", full.names=TRUE)
@@ -28,6 +28,7 @@ out_dir <- file.path(getwd(), "unsup_model_out")
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
 # ========================= HELPERS ============================
+# confirm presence and format delta column
 read_delta <- function(path) {
   df <- read.csv(path, check.names = FALSE)
   if (!"delta" %in% names(df)) stop("File lacks a 'delta' column: ", path)
@@ -387,11 +388,11 @@ overall_con_plot <- overall_roc_min_plot(all_lbl_con, all_scr_con, "Overall Cont
 overall_panel <- (overall_exp_plot | overall_con_plot)
 print(overall_panel)
 
-# Save metrics & per-bin predictions and close PDF
+# Save metrics & per-bin predictions and close PDF containing ROC curve analysis
 write_csv(metrics,       file.path(out_dir, "test_metrics.csv"))
 write_csv(pred_bins_all, file.path(out_dir, "test_bin_predictions.csv"))
 grDevices::dev.off()
-message("Saved: ", pdf_fn)
+message("Saved: ", pdf_fn) 
 message("Saved: ", file.path(out_dir, "test_metrics.csv"))
-message("Saved: ", file.path(out_dir, "test_bin_predictions.csv"))
+message("Saved: ", file.path(out_dir, "test_bin_predictions.csv")) 
 message("Saved per-file PNG panels to: ", out_dir)
