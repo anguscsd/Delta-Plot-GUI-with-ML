@@ -48,6 +48,27 @@ def resolve_uploaded_paths(paths):
             resolved.append(path)
     return resolved
 
+def _between_sample_error_from_filtered(df1_f, df2_f, mode="SD"):
+    """
+    Compute SD or SEM between Set 1 and Set 2 deltas at matching repeat lengths.
+    df1_f and df2_f are already filtered (e.g., with iloc[::bin_size]).
+    Returns (x_common_np, err_np). If no overlap, returns (empty arrays).
+    """
+    # Series indexed by repeat length so we can align
+    s1 = pd.Series(df1_f["delta"].values, index=df1_f["repeat length"].values)
+    s2 = pd.Series(df2_f["delta"].values, index=df2_f["repeat length"].values)
+    common = s1.index.intersection(s2.index)
+    if len(common) == 0:
+        return np.array([]), np.array([])
+    y1c = s1.loc[common].values
+    y2c = s2.loc[common].values
+    stacked = np.vstack([y1c, y2c])                  # shape (2, n_common)
+    sd = np.std(stacked, axis=0, ddof=1) if stacked.shape[0] > 1 else np.zeros(stacked.shape[1])
+    if mode.upper().startswith("SEM"):
+        sd = sd / np.sqrt(stacked.shape[0])          # n=2 if two sets
+    return common.values, sd
+
+
 # ---------- Analyzer: read & normalize ----------
 def read_and_normalize_files(file_paths, label_prefix):
     merged_df = None
@@ -122,73 +143,92 @@ def read_and_normalize_files(file_paths, label_prefix):
 
 
 # ---------- Analyzer: PDF plot (supports error bars) ----------
+from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.gridspec import GridSpec
+from textwrap import wrap
+
 def generate_delta_plot(dataframe, output_path="delta_plot.pdf", bin_size=2, title="Delta Plot",
-                        color="red", error_mode="None", dataframe2=None, color2="black"):
-    df = dataframe.copy().sort_values("repeat length")
-    df_f = df.iloc[::bin_size, :]
+                        color="red", error_mode="None", dataframe2=None, color2="blue"):
+    # Prepare Set 1 (required)
+    df1 = dataframe.copy().sort_values("repeat length")
+    df1_f = df1.iloc[::bin_size, :]
+
+    # Optional Set 2
+    have_set2 = dataframe2 is not None
+    if have_set2:
+        df2 = dataframe2.copy().sort_values("repeat length")
+        df2_f = df2.iloc[::bin_size, :]
+    else:
+        df2 = None
+        df2_f = None
 
     with PdfPages(output_path) as pdf:
-        fig = plt.figure(figsize=(8.27, 11.69))
+        # -------- Page 1: Delta plot --------
+        fig = plt.figure(figsize=(8.27, 11.69))  # A4 portrait
         gs = GridSpec(2, 1, height_ratios=[1, 1], figure=fig)
         ax1 = fig.add_subplot(gs[0])
-
         ax1.axhline(0, color='gray', linestyle='--', linewidth=1)
 
-        # --- Set 1 ---
-        x1 = df_f["repeat length"]
-        y1 = df_f["delta"]
-        yerr1 = None
-        if error_mode != "None":
-            d0c = [c for c in dataframe.columns if c.startswith("Day0_")]
-            d42c = [c for c in dataframe.columns if c.startswith("Day42_")]
-            if d0c and d42c:
-                d0v = dataframe[d0c].iloc[::bin_size, :]
-                d42v = dataframe[d42c].iloc[::bin_size, :]
-                if error_mode == "Standard Deviation (SD)":
-                    yerr1 = np.sqrt(d0v.std(axis=1)**2 + d42v.std(axis=1)**2)
-                else:
-                    yerr1 = np.sqrt(d0v.sem(axis=1)**2 + d42v.sem(axis=1)**2)
+        # Lines to plot
+        x1 = df1_f["repeat length"].values
+        y1 = df1_f["delta"].values
 
-        if yerr1 is not None:
-            ax1.errorbar(x1, y1, yerr=yerr1, fmt='o-', color=color, capsize=3, markersize=3, label="Set 1")
-        else:
+        use_between = (error_mode != "None") and have_set2
+
+        if use_between:
+            # Between-sample SD/SEM across Set 1 vs Set 2 at common x
+            x_common, err_between = _between_sample_error_from_filtered(df1_f, df2_f, mode=error_mode)
+
+            # Plot lines
             ax1.plot(x1, y1, linestyle='-', marker='o', markersize=4, color=color, label="Set 1")
+            x2 = df2_f["repeat length"].values
+            y2 = df2_f["delta"].values
+            ax1.plot(x2, y2, linestyle='--', marker='s', markersize=4, color=color2, label="Set 2")
 
-        # --- Optional Set 2 ---
-        if dataframe2 is not None:
-            df2 = dataframe2.copy().sort_values("repeat length")
-            df2_f = df2.iloc[::bin_size, :]
-            x2 = df2_f["repeat length"]
-            y2 = df2_f["delta"]
+            # Error bars (no extra markers): both lines get the same between-sample error
+            if x_common.size:
+                y1c = pd.Series(y1, index=x1).loc[x_common].values
+                y2c = pd.Series(y2, index=x2).loc[x_common].values
+                ax1.errorbar(x_common, y1c, yerr=err_between, fmt='none', ecolor=color, capsize=3)
+                ax1.errorbar(x_common, y2c, yerr=err_between, fmt='none', ecolor=color2, capsize=3)
 
-            yerr2 = None
+        else:
+            # Original within-replicate SD/SEM for Set 1 only (or no error bars)
+            yerr1 = None
             if error_mode != "None":
-                d0c2 = [c for c in dataframe2.columns if c.startswith("Day0_")]
-                d42c2 = [c for c in dataframe2.columns if c.startswith("Day42_")]
-                if d0c2 and d42c2:
-                    d0v2 = dataframe2[d0c2].iloc[::bin_size, :]
-                    d42v2 = dataframe2[d42c2].iloc[::bin_size, :]
+                d0c = [c for c in df1.columns if c.startswith("Day0_")]
+                d42c = [c for c in df1.columns if c.startswith("treated_")]
+                if d0c and d42c:
+                    d0v = df1[d0c].iloc[::bin_size, :]
+                    d42v = df1[d42c].iloc[::bin_size, :]
                     if error_mode == "Standard Deviation (SD)":
-                        yerr2 = np.sqrt(d0v2.std(axis=1)**2 + d42v2.std(axis=1)**2)
+                        yerr1 = np.sqrt(d0v.std(axis=1)**2 + d42v.std(axis=1)**2)
                     else:
-                        yerr2 = np.sqrt(d0v2.sem(axis=1)**2 + d42v2.sem(axis=1)**2)
+                        yerr1 = np.sqrt(d0v.sem(axis=1)**2 + d42v.sem(axis=1)**2)
 
-            if yerr2 is not None:
-                ax1.errorbar(x2, y2, yerr=yerr2, fmt='s--', color=color2, capsize=3, markersize=3, label="Set 2")
+            if yerr1 is not None:
+                ax1.errorbar(x1, y1, yerr=yerr1, fmt='o-', color=color, capsize=3, markersize=3, label="Set 1")
             else:
+                ax1.plot(x1, y1, linestyle='-', marker='o', markersize=4, color=color, label="Set 1")
+
+            # If Set 2 exists, plot it as a line (no within-replicate bars here)
+            if have_set2:
+                x2 = df2_f["repeat length"].values
+                y2 = df2_f["delta"].values
                 ax1.plot(x2, y2, linestyle='--', marker='s', markersize=4, color=color2, label="Set 2")
 
         ax1.set_title(title, fontsize=14)
         ax1.set_xlabel("Repeat Length", fontsize=12)
-        ax1.set_ylabel("Delta (Day42_avg - Day0_avg)", fontsize=12)
+        ax1.set_ylabel("Delta (treated_avg - Day0_avg)", fontsize=12)
         ax1.set_xlim(30, 200)
         ax1.legend()
 
-        # Description / footer
+        # Description block
         description_title = "Description of Plot:"
         description_body = (
-            "The delta plot shows the average change in repeat size between Day 0 and Day 42. "
-            "If two datasets are provided, both are overlaid to facilitate comparison."
+            "The delta plot shows the average change in repeat size between Day 0 and treated. "
+            "When two datasets are provided and error bars are enabled, error bars represent between-sample variability (SD/SEM) "
+            "at shared repeat lengths. With a single dataset, within-replicate SD/SEM is shown."
         )
         wrapped_body = "\n".join(wrap(description_body, width=100))
         fig.text(0.05, 0.42, description_title, fontsize=12, weight="bold", ha="left")
@@ -198,26 +238,25 @@ def generate_delta_plot(dataframe, output_path="delta_plot.pdf", bin_size=2, tit
         pdf.savefig(fig)
         plt.close(fig)
 
-        # Optional page comparing Day0/Day42 averages (overlay both sets)
+        # -------- Page 2: Day0/treated overlay (unchanged) --------
         fig2, ax2 = plt.subplots(figsize=(8.27, 4))
-        x = df["repeat length"]
-        if "Day0_avg" in df and "Day42_avg" in df:
-            ax2.plot(x, df["Day0_avg"], label="Day 0 (Set 1)")
-            ax2.plot(x, df["Day42_avg"], label="Day 42 (Set 1)")
-        if dataframe2 is not None and "Day0_avg" in dataframe2 and "Day42_avg" in dataframe2:
-            x2 = dataframe2["repeat length"]
-            ax2.plot(x2, dataframe2["Day0_avg"], linestyle="--", label="Day 0 (Set 2)")
-            ax2.plot(x2, dataframe2["Day42_avg"], linestyle="--", label="Day 42 (Set 2)")
+        if "Day0_avg" in df1 and "treated_avg" in df1:
+            ax2.plot(df1["repeat length"], df1["Day0_avg"], label="Day 0 (Set 1)")
+            ax2.plot(df1["repeat length"], df1["treated_avg"], label="treated (Set 1)")
+        if have_set2 and ("Day0_avg" in df2) and ("treated_avg" in df2):
+            ax2.plot(df2["repeat length"], df2["Day0_avg"], linestyle="--", label="Day 0 (Set 2)")
+            ax2.plot(df2["repeat length"], df2["treated_avg"], linestyle="--", label="treated (Set 2)")
         ax2.set_xlabel("Repeat Length")
         ax2.set_ylabel("Normalized Frequency")
-        ax2.set_title("Histogram Comparison: Day 0 vs Day 42")
+        ax2.set_title("Histogram Comparison: Day 0 vs treated")
         ax2.set_xlim(0, 200)
         ax2.legend()
         plt.tight_layout()
         pdf.savefig(fig2)
         plt.close(fig2)
 
-        # Quick Day0/Day42 average overlay
+
+        # Quick Day0/treated average overlay
         hist_fig = plot_histogram_comparison(dataframe)
         pdf.savefig(hist_fig)
         plt.close(hist_fig)
@@ -225,15 +264,15 @@ def generate_delta_plot(dataframe, output_path="delta_plot.pdf", bin_size=2, tit
 def plot_histogram_comparison(df):
     fig, ax = plt.subplots(figsize=(8.27, 4))
     x = df["repeat length"]
-    if "Day0_avg" in df and "Day42_avg" in df:
+    if "Day0_avg" in df and "treated_avg" in df:
         y_day0 = df["Day0_avg"]
-        y_day42 = df["Day42_avg"]
+        y_treated = df["treated_avg"]
         ax.plot(x, y_day0, label="Day 0", linewidth=2)
-        ax.plot(x, y_day42, label="Day 42", linewidth=2)
+        ax.plot(x, y_treated, label="treated", linewidth=2)
         ax.legend()
     ax.set_xlabel("Repeat Length")
     ax.set_ylabel("Normalized Frequency")
-    ax.set_title("Histogram Comparison: Day 0 vs Day 42")
+    ax.set_title("Histogram Comparison: Day 0 vs treated")
     ax.set_xlim(0, 200)
     plt.tight_layout()
     return fig
@@ -322,14 +361,14 @@ class GenerateHistogramsPanel(wx.Panel):
         wx.CallAfter(self.outputCtrl.AppendText, msg + "\n")
 
     def _classify_day_mainthread(self, filename):
-        """Run on the main thread: show a dialog to map file → Day0/Day42 if ambiguous."""
+        """Run on the main thread: show a dialog to map file → Day0/treated if ambiguous."""
         name = os.path.basename(filename).lower()
-        if "day42" in name or "day_42" in name or "d42" in name:
-            return "Day42"
+        if "treated" in name or "day_42" in name or "d42" in name:
+            return "treated"
         if "day0" in name or "day_0" in name or "d0" in name:
             return "Day0"
         dlg = wx.SingleChoiceDialog(self, f"Assign sample '{os.path.basename(filename)}' to:",
-                                    "Choose Group", ["Day0", "Day42"])
+                                    "Choose Group", ["Day0", "treated"])
         try:
             if dlg.ShowModal() == wx.ID_OK:
                 return dlg.GetStringSelection()
@@ -352,11 +391,11 @@ class GenerateHistogramsPanel(wx.Panel):
         if not out_base:
             wx.MessageBox("Please choose an output base directory.", "Error", wx.OK|wx.ICON_ERROR); return
 
-        # Create Day0/Day42 subfolders
+        # Create Day0/treated subfolders
         day0_dir = os.path.join(out_base, "Day0_histograms")
-        day42_dir = os.path.join(out_base, "Day42_histograms")
+        treated_dir = os.path.join(out_base, "treated_histograms")
         os.makedirs(day0_dir, exist_ok=True)
-        os.makedirs(day42_dir, exist_ok=True)
+        os.makedirs(treated_dir, exist_ok=True)
 
         # PRE-CLASSIFY FASTAs ON THE MAIN THREAD
         fastas = [f for f in os.listdir(fasta_dir) if f.lower().endswith(('.fasta', '.fa'))]
@@ -372,12 +411,12 @@ class GenerateHistogramsPanel(wx.Panel):
         # Pass mapping to worker
         threading.Thread(
             target=self._worker,
-            args=(fasta_dir, day0_dir, day42_dir, profile, run_instability, mapping),
+            args=(fasta_dir, day0_dir, treated_dir, profile, run_instability, mapping),
             daemon=True
         ).start()
 
 
-    def _worker(self, fasta_dir, day0_dir, day42_dir, profile, run_instability, mapping):
+    def _worker(self, fasta_dir, day0_dir, treated_dir, profile, run_instability, mapping):
         try:
             prf_file = ("/app/RepeatDetector/Profiles/CAG/Annex10_cag_correctedFreq_notlog_AND_Complete.prf"
                         if profile == "restrictive"
@@ -385,11 +424,11 @@ class GenerateHistogramsPanel(wx.Panel):
 
             fastas = [f for f in os.listdir(fasta_dir) if f.lower().endswith(('.fasta', '.fa'))]
             total = len(fastas)
-            produced_day0, produced_day42 = [], []
+            produced_day0, produced_treated = [], []
 
             for i, fasta_file in enumerate(fastas, 1):
                 group = mapping.get(fasta_file, "Day0")  # Use pre-chosen group
-                out_dir = day0_dir if group == "Day0" else day42_dir
+                out_dir = day0_dir if group == "Day0" else treated_dir
 
                 file_name = os.path.splitext(fasta_file)[0]
                 output_basename = f"{file_name}.rest" if profile == "restrictive" else f"{file_name}.per"
@@ -415,7 +454,7 @@ repeat-detector \
 
                 hist_path = os.path.join(out_dir, f"{output_basename}.histogram")
                 if os.path.isfile(hist_path):
-                    (produced_day0 if group == "Day0" else produced_day42).append(hist_path)
+                    (produced_day0 if group == "Day0" else produced_treated).append(hist_path)
                     if run_instability:
                         try:
                             self._run_instability_index(hist_path)
@@ -424,12 +463,12 @@ repeat-detector \
 
                 wx.CallAfter(self.gauge.SetValue, int(100 * i / max(1, total)))
 
-            self.log(f"✅ Finished. Day0 files: {len(produced_day0)}, Day42 files: {len(produced_day42)}")
+            self.log(f"✅ Finished. Day0 files: {len(produced_day0)}, treated files: {len(produced_treated)}")
             # Publish to analysis tab
             from pubsub import pub  # if you’ve switched to pypubsub
             wx.CallAfter(pub.sendMessage, "histograms_ready",
-                        day0=produced_day0, day42=produced_day42,
-                        day0_dir=day0_dir, day42_dir=day42_dir)
+                        day0=produced_day0, treated=produced_treated,
+                        day0_dir=day0_dir, treated_dir=treated_dir)
 
         except Exception as e:
             self.log(f"❌ Fatal error: {e}")
@@ -515,19 +554,19 @@ class AnalyzeHistogramsPanel(wx.Panel):
         vbox.Add(created_by_banner(self), flag=wx.EXPAND | wx.TOP | wx.BOTTOM, border=5)
 
         self.day0_btn = wx.Button(self, label="Select Day 0 Files/Folders")
-        self.day42_btn = wx.Button(self, label="Select Day 42 Files/Folders")
+        self.treated_btn = wx.Button(self, label="Select treated Files/Folders")
         self.day0_paths = []
-        self.day42_paths = []
+        self.treated_paths = []
         
         # --- (Set 2, optional) ---
         self.day0_btn2 = wx.Button(self, label="Select Day 0 Files/Folders (Set 2)")
-        self.day42_btn2 = wx.Button(self, label="Select Day 42 Files/Folders (Set 2)")
+        self.treated_btn2 = wx.Button(self, label="Select treated Files/Folders (Set 2)")
 
         self.day0_paths2 = []
-        self.day42_paths2 = []
+        self.treated_paths2 = []
 
         self.day0_status2 = wx.StaticText(self, label="📁 No Day 0 files selected (Set 2).")
-        self.day42_status2 = wx.StaticText(self, label="📁 No Day 42 files selected (Set 2).")
+        self.treated_status2 = wx.StaticText(self, label="📁 No treated files selected (Set 2).")
 
         self.title_txt = wx.TextCtrl(self, value="Delta Plot", size=(400, -1))
         self.color_choice = wx.Choice(self, choices=["red", "blue", "green", "black", "orange", "pink", "purple", "grey"])
@@ -543,7 +582,7 @@ class AnalyzeHistogramsPanel(wx.Panel):
 
         self.status = wx.StaticText(self, label="📂 Upload files and click 'Normalise'.")
         self.day0_status = wx.StaticText(self, label="📁 No Day 0 files selected.")
-        self.day42_status = wx.StaticText(self, label="📁 No Day 42 files selected.")
+        self.treated_status = wx.StaticText(self, label="📁 No treated files selected.")
 
         self.csv_path_ctrl = wx.TextCtrl(self, value="normalized_with_delta.csv", size=(400, -1))
         self.csv_browse_btn = wx.Button(self, label="Browse CSV Output")
@@ -588,8 +627,8 @@ class AnalyzeHistogramsPanel(wx.Panel):
         vbox.Add(self.day0_btn, 0, wx.EXPAND | wx.ALL, 10)
         vbox.Add(self.day0_status, 0, wx.LEFT | wx.RIGHT, 10)
 
-        vbox.Add(self.day42_btn, 0, wx.EXPAND | wx.ALL, 10)
-        vbox.Add(self.day42_status, 0, wx.LEFT | wx.RIGHT, 10)
+        vbox.Add(self.treated_btn, 0, wx.EXPAND | wx.ALL, 10)
+        vbox.Add(self.treated_status, 0, wx.LEFT | wx.RIGHT, 10)
 
         vbox.Add(wx.StaticLine(self), 0, wx.EXPAND | wx.ALL, 5)
         vbox.Add(wx.StaticText(self, label="Optional: Second Dataset"), 0, wx.LEFT | wx.TOP, 10)
@@ -597,8 +636,8 @@ class AnalyzeHistogramsPanel(wx.Panel):
         vbox.Add(self.day0_btn2, 0, wx.EXPAND | wx.ALL, 10)
         vbox.Add(self.day0_status2, 0, wx.LEFT | wx.RIGHT, 10)
 
-        vbox.Add(self.day42_btn2, 0, wx.EXPAND | wx.ALL, 10)
-        vbox.Add(self.day42_status2, 0, wx.LEFT | wx.RIGHT, 10)
+        vbox.Add(self.treated_btn2, 0, wx.EXPAND | wx.ALL, 10)
+        vbox.Add(self.treated_status2, 0, wx.LEFT | wx.RIGHT, 10)
 
         hbox = wx.BoxSizer(wx.HORIZONTAL)
         hbox.Add(self.norm_btn, 0, wx.RIGHT, 5)
@@ -616,11 +655,11 @@ class AnalyzeHistogramsPanel(wx.Panel):
 
         # Bindings
         self.day0_btn.Bind(wx.EVT_BUTTON, self.on_day0_select)
-        self.day42_btn.Bind(wx.EVT_BUTTON, self.on_day42_select)
+        self.treated_btn.Bind(wx.EVT_BUTTON, self.on_treated_select)
         self.norm_btn.Bind(wx.EVT_BUTTON, self.on_normalize)
         self.plot_btn.Bind(wx.EVT_BUTTON, self.on_plot)
         self.day0_btn2.Bind(wx.EVT_BUTTON, self.on_day0_select2)
-        self.day42_btn2.Bind(wx.EVT_BUTTON, self.on_day42_select2)
+        self.treated_btn2.Bind(wx.EVT_BUTTON, self.on_treated_select2)
 
         self.merged_df = None
         self.merged_df2 = None
@@ -629,12 +668,12 @@ class AnalyzeHistogramsPanel(wx.Panel):
         pub.subscribe(self._on_histos_ready, "histograms_ready")
 
     # ----- Tab-to-tab handoff -----
-    def _on_histos_ready(self, day0, day42, day0_dir, day42_dir):
+    def _on_histos_ready(self, day0, treated, day0_dir, treated_dir):
         # Accept lists of histogram file paths from Tab 1
         self.day0_paths = day0[:] if day0 else [day0_dir]
-        self.day42_paths = day42[:] if day42 else [day42_dir]
+        self.treated_paths = treated[:] if treated else [treated_dir]
         self.day0_status.SetLabel(f"📥 From Docker: {len(day0)} Day 0 files in {os.path.basename(day0_dir)}")
-        self.day42_status.SetLabel(f"📥 From Docker: {len(day42)} Day 42 files in {os.path.basename(day42_dir)}")
+        self.treated_status.SetLabel(f"📥 From Docker: {len(treated)} treated files in {os.path.basename(treated_dir)}")
         self.status.SetLabel("Ready to normalise. Click 'Normalise'.")
 
         # Auto-switch to this tab
@@ -653,14 +692,14 @@ class AnalyzeHistogramsPanel(wx.Panel):
             self.day0_status.SetLabel("⚠️ No Day 0 files selected.")
         dlg.Destroy()
 
-    def on_day42_select(self, _):
-        dlg = wx.FileDialog(self, "Select Day 42 files or folders", style=wx.FD_OPEN | wx.FD_MULTIPLE)
+    def on_treated_select(self, _):
+        dlg = wx.FileDialog(self, "Select treated files or folders", style=wx.FD_OPEN | wx.FD_MULTIPLE)
         if dlg.ShowModal() == wx.ID_OK:
-            self.day42_paths = dlg.GetPaths()
-            file_count = len(resolve_uploaded_paths(self.day42_paths))
-            self.day42_status.SetLabel(f"✅ {file_count} Day 42 files selected.")
+            self.treated_paths = dlg.GetPaths()
+            file_count = len(resolve_uploaded_paths(self.treated_paths))
+            self.treated_status.SetLabel(f"✅ {file_count} treated files selected.")
         else:
-            self.day42_status.SetLabel("⚠️ No Day 42 files selected.")
+            self.treated_status.SetLabel("⚠️ No treated files selected.")
         dlg.Destroy()
 
     def on_browse_csv(self, _):
@@ -687,14 +726,14 @@ class AnalyzeHistogramsPanel(wx.Panel):
             self.day0_status2.SetLabel("⚠️ No Day 0 files selected (Set 2).")
         dlg.Destroy()
 
-    def on_day42_select2(self, _):
-        dlg = wx.FileDialog(self, "Select Day 42 files/folders (Set 2)", style=wx.FD_OPEN | wx.FD_MULTIPLE)
+    def on_treated_select2(self, _):
+        dlg = wx.FileDialog(self, "Select treated files/folders (Set 2)", style=wx.FD_OPEN | wx.FD_MULTIPLE)
         if dlg.ShowModal() == wx.ID_OK:
-            self.day42_paths2 = dlg.GetPaths()
-            file_count = len(resolve_uploaded_paths(self.day42_paths2))
-            self.day42_status2.SetLabel(f"✅ {file_count} Day 42 files selected (Set 2).")
+            self.treated_paths2 = dlg.GetPaths()
+            file_count = len(resolve_uploaded_paths(self.treated_paths2))
+            self.treated_status2.SetLabel(f"✅ {file_count} treated files selected (Set 2).")
         else:
-            self.day42_status2.SetLabel("⚠️ No Day 42 files selected (Set 2).")
+            self.treated_status2.SetLabel("⚠️ No treated files selected (Set 2).")
         dlg.Destroy()
 
     # ----- Core actions -----
@@ -702,21 +741,21 @@ class AnalyzeHistogramsPanel(wx.Panel):
         try:
             # --- Set 1 ---
             day0_files = resolve_uploaded_paths(self.day0_paths)
-            day42_files = resolve_uploaded_paths(self.day42_paths)
-            if not day0_files or not day42_files:
+            treated_files = resolve_uploaded_paths(self.treated_paths)
+            if not day0_files or not treated_files:
                 self.status.SetLabel("⚠️ One or both file groups missing (Set 1).")
                 return
 
             df_day0 = read_and_normalize_files(day0_files, "Day0")
-            df_day42 = read_and_normalize_files(day42_files, "Day42")
+            df_treated = read_and_normalize_files(treated_files, "treated")
 
-            combined = pd.merge(df_day0, df_day42, on="repeat length", how="inner")
+            combined = pd.merge(df_day0, df_treated, on="repeat length", how="inner")
             day0_cols = [c for c in combined.columns if c.startswith("Day0_")]
-            day42_cols = [c for c in combined.columns if c.startswith("Day42_")]
+            treated_cols = [c for c in combined.columns if c.startswith("treated_")]
 
             combined["Day0_avg"] = combined[day0_cols].mean(axis=1)
-            combined["Day42_avg"] = combined[day42_cols].mean(axis=1)
-            combined["delta"] = combined["Day42_avg"] - combined["Day0_avg"]
+            combined["treated_avg"] = combined[treated_cols].mean(axis=1)
+            combined["delta"] = combined["treated_avg"] - combined["Day0_avg"]
             cols = [c for c in combined.columns if c != "delta"]
             combined = combined[cols + ["delta"]]
 
@@ -727,19 +766,19 @@ class AnalyzeHistogramsPanel(wx.Panel):
 
             # --- Optional Set 2 ---
             day0_files2 = resolve_uploaded_paths(self.day0_paths2)
-            day42_files2 = resolve_uploaded_paths(self.day42_paths2)
+            treated_files2 = resolve_uploaded_paths(self.treated_paths2)
             self.merged_df2 = None
 
-            if day0_files2 and day42_files2:
+            if day0_files2 and treated_files2:
                 df_day0_2 = read_and_normalize_files(day0_files2, "Day0")
-                df_day42_2 = read_and_normalize_files(day42_files2, "Day42")
+                df_treated_2 = read_and_normalize_files(treated_files2, "treated")
 
-                combined2 = pd.merge(df_day0_2, df_day42_2, on="repeat length", how="inner")
+                combined2 = pd.merge(df_day0_2, df_treated_2, on="repeat length", how="inner")
                 d0c2 = [c for c in combined2.columns if c.startswith("Day0_")]
-                d42c2 = [c for c in combined2.columns if c.startswith("Day42_")]
+                d42c2 = [c for c in combined2.columns if c.startswith("treated_")]
                 combined2["Day0_avg"] = combined2[d0c2].mean(axis=1)
-                combined2["Day42_avg"] = combined2[d42c2].mean(axis=1)
-                combined2["delta"] = combined2["Day42_avg"] - combined2["Day0_avg"]
+                combined2["treated_avg"] = combined2[d42c2].mean(axis=1)
+                combined2["delta"] = combined2["treated_avg"] - combined2["Day0_avg"]
                 cols2 = [c for c in combined2.columns if c != "delta"]
                 combined2 = combined2[cols2 + ["delta"]]
                 # Save next to set1 csv with suffix
@@ -775,7 +814,7 @@ class AnalyzeHistogramsPanel(wx.Panel):
                            dataframe2=self.merged_df2, color2=color2)
         self.status.SetLabel(f"✅ Delta plot saved to: {pdf_path}")
 
-    def on_view_plot(self, _event):
+    def on_view_plot(self, event):
         if self.merged_df is None:
             self.status.SetLabel("⚠️ Please normalize data first.")
             return
@@ -785,72 +824,81 @@ class AnalyzeHistogramsPanel(wx.Panel):
         color      = self.color_choice.GetStringSelection()
         error_mode = self.error_bar_choice.GetStringSelection()
 
-        # Clear panel BEFORE adding new canvas
+    # Clear any previous canvas first
         self.plot_panel.DestroyChildren()
         if getattr(self, "plot_canvas", None):
             self.plot_canvas.Destroy()
             self.plot_canvas = None
 
-        # Build figure
+    # Build figure
         fig = Figure(figsize=(6, 3))
         ax  = fig.add_subplot(111)
         ax.axhline(0, color='gray', linestyle='--', linewidth=1)
 
-        # ---- Set 1 ----
+        # Set 1
         df1   = self.merged_df.copy().sort_values("repeat length")
         df1_f = df1.iloc[::bin_size, :]
-        x1, y1 = df1_f["repeat length"], df1_f["delta"]
+        x1 = df1_f["repeat length"].values
+        y1 = df1_f["delta"].values
 
-        yerr1 = None
-        if error_mode != "None":
-            d0c = [c for c in df1.columns if c.startswith("Day0_")]
-            d42c = [c for c in df1.columns if c.startswith("Day42_")]
-            if d0c and d42c:
-                d0v = df1[d0c].iloc[::bin_size, :]
-                d42v = df1[d42c].iloc[::bin_size, :]
-                if error_mode.startswith("Standard Deviation"):
-                    yerr1 = np.sqrt(d0v.std(axis=1)**2 + d42v.std(axis=1)**2)
-                else:
-                    yerr1 = np.sqrt(d0v.sem(axis=1)**2 + d42v.sem(axis=1)**2)
+        have_set2 = getattr(self, "merged_df2", None) is not None
+        use_between = (error_mode != "None") and have_set2
 
-        if yerr1 is not None:
-            ax.errorbar(x1, y1, yerr=yerr1, fmt='o-', color=color, capsize=3, markersize=3, label="Set 1")
-        else:
-            ax.plot(x1, y1, marker='o', linestyle='-', color=color, markersize=3, label="Set 1")
-
-        # ---- Optional Set 2 ----
-        if getattr(self, "merged_df2", None) is not None:
+        if use_between:
+            # Set 2 present: compute between-sample SD/SEM at common x
             df2   = self.merged_df2.copy().sort_values("repeat length")
             df2_f = df2.iloc[::bin_size, :]
-            x2, y2 = df2_f["repeat length"], df2_f["delta"]
 
-            yerr2 = None
+            # Lines
+            ax.plot(x1, y1, marker='o', linestyle='-', color=color, markersize=3, label="Set 1")
+            x2 = df2_f["repeat length"].values
+            y2 = df2_f["delta"].values
+            ax.plot(x2, y2, marker='s', linestyle='--', color="black", markersize=3, label="Set 2")
+
+            # Between-sample error bars
+            x_common, err_between = _between_sample_error_from_filtered(df1_f, df2_f, mode=error_mode)
+            if x_common.size:
+                y1c = pd.Series(y1, index=x1).loc[x_common].values
+                y2c = pd.Series(y2, index=x2).loc[x_common].values
+                ax.errorbar(x_common, y1c, yerr=err_between, fmt='none', ecolor=color, capsize=3)
+                ax.errorbar(x_common, y2c, yerr=err_between, fmt='none', ecolor="black", capsize=3)
+
+        else:
+            # Single-set (or no error bars): within-replicate SD/SEM for Set 1
+            yerr1 = None
             if error_mode != "None":
-                d0c2 = [c for c in df2.columns if c.startswith("Day0_")]
-                d42c2 = [c for c in df2.columns if c.startswith("Day42_")]
-                if d0c2 and d42c2:
-                    d0v2 = df2[d0c2].iloc[::bin_size, :]
-                    d42v2 = df2[d42c2].iloc[::bin_size, :]
-                    if error_mode.startswith("Standard Deviation"):
-                        yerr2 = np.sqrt(d0v2.std(axis=1)**2 + d42v2.std(axis=1)**2)
+                d0c = [c for c in df1.columns if c.startswith("Day0_")]
+                d42c = [c for c in df1.columns if c.startswith("treated_")]
+                if d0c and d42c:
+                    d0v = df1[d0c].iloc[::bin_size, :]
+                    d42v = df1[d42c].iloc[::bin_size, :]
+                    if error_mode == "Standard Deviation (SD)":
+                        yerr1 = np.sqrt(d0v.std(axis=1)**2 + d42v.std(axis=1)**2)
                     else:
-                        yerr2 = np.sqrt(d0v2.sem(axis=1)**2 + d42v2.sem(axis=1)**2)
+                        yerr1 = np.sqrt(d0v.sem(axis=1)**2 + d42v.sem(axis=1)**2)
 
-            if yerr2 is not None:
-                ax.errorbar(x2, y2, yerr=yerr2, fmt='s--', color="black", capsize=3, markersize=3, label="Set 2")
+            if yerr1 is not None:
+                ax.errorbar(x1, y1, yerr=yerr1, fmt='o-', color=color, capsize=3, markersize=3, label="Set 1")
             else:
+                ax.plot(x1, y1, marker='o', linestyle='-', color=color, markersize=3, label="Set 1")
+
+            # Optional Set 2 line (no within-replicate bars here)
+            if have_set2:
+                df2   = self.merged_df2.copy().sort_values("repeat length")
+                df2_f = df2.iloc[::bin_size, :]
+                x2 = df2_f["repeat length"].values
+                y2 = df2_f["delta"].values
                 ax.plot(x2, y2, marker='s', linestyle='--', color="black", markersize=3, label="Set 2")
 
         ax.set_xlim(0, 200)
         ax.set_title(title)
         ax.set_xlabel("Repeat Length")
-        ax.set_ylabel("Delta (Day42_avg - Day0_avg)")
+        ax.set_ylabel("Delta (treated_avg - Day0_avg)")
         ax.legend()
 
         # Embed canvas
         self.plot_canvas = FigureCanvas(self.plot_panel, -1, fig)
         self.plot_canvas.draw()
-
         sizer = wx.BoxSizer(wx.VERTICAL)
         sizer.Add(self.plot_canvas, 1, wx.EXPAND)
         self.plot_panel.SetSizer(sizer)
@@ -859,6 +907,7 @@ class AnalyzeHistogramsPanel(wx.Panel):
         self.plot_panel.Update()
 
         wx.CallAfter(self.status.SetLabel, "📊 Delta plot displayed below.")
+
 
 
 # -------------------------
