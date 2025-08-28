@@ -24,17 +24,17 @@ This tab provides controls for running the Repeat Detector workflow:
 * Choose analysis profiles: **restrictive** or **permissive**.
 * Optionally enable calculation of instability metrics, including Instability Index (II), Expansion Index (EI), and Contraction Index (CI).
 * Set an output directory for histogram files.
-* Automatically sorts results into `day0` and `day42` subdirectories based on filename conventions.
+* Automatically sorts results into `day0` and `treated` subdirectories based on filename conventions.
 * Displays real-time status updates while RD is running.
 
 #### 2. Analyse Histograms
 This tab enables statistical analysis and visualisation of histogram outputs:
-* Load histogram files for **day 0** and **day 42** for one or two datasets.
+* Load histogram files for **day 0** and **treated** for one or two datasets.
 * Supports both **tab-separated** and **comma-separated** file formats.
 * Normalises read counts using the equation:  
   **normalised_reads = (reads / Σ reads) × 100**
 * Calculates delta values:  
-  **Δ = Day42_mean − Day0_mean**
+  **Δ = treated_mean − Day0_mean**
 * Optionally displays **error bars** between replicates or datasets:
   * Standard Deviation (SD)
   * Standard Error of the Mean (SEM)
@@ -68,7 +68,7 @@ It generates a comprehensive PDF report containing dataset-specific results, bin
 ## Input Data Format
 The input CSV files should follow this structure:
 - **First column**: Repeat length (numeric, ascending or mixed order).
-- **Second column**: Δ values (Day42 − Day0).  
+- **Second column**: Δ values (treated − Day0).  
 - File names must be unique and meaningful, as they are used in result summaries.
 
 ---
@@ -140,9 +140,7 @@ The following R packages are required:
 - **scales** → Formatting axes and labels
 - **readr** → Fast CSV reading/writing
 - **mclust** → Gaussian Mixture Models
-
-Install automatically on first run if not present.
-
+- 
 ---
 
 ## Recommended Use
