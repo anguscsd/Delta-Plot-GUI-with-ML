@@ -54,12 +54,14 @@ Before running the application, ensure you have the following installed:
   ```bash
   pip install wxPython pandas numpy matplotlib
 
-# R Script fot ML
+# R Scripts fot ML
 **This current version of the Machine Learning is written and run in R**
 
 The pipeline supports two clustering approaches:
 1. **Gaussian Mixture Models (GMM)** *(recommended)*  
 2. **K-means Clustering** *(alternative method)*
+3. **HCA** *(in progress)*
+4. **GAM Smoothing** *(not strictly ML but produces similar outputs)*
 
 It generates a comprehensive PDF report containing dataset-specific results, bin-level predictions, and **Receiver Operating Characteristic (ROC)** curves for model evaluation, alongside structured CSV outputs for further analysis.
 
