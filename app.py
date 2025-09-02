@@ -54,7 +54,7 @@ def _between_sample_error_from_filtered(df1_f, df2_f, mode="SD"):
     df1_f and df2_f are already filtered (e.g., with iloc[::bin_size]).
     Returns (x_common_np, err_np). If no overlap, returns (empty arrays).
     """
-    # Series indexed by repeat length so we can align
+    # Series indexed by repeat length for alignment
     s1 = pd.Series(df1_f["delta"].values, index=df1_f["repeat length"].values)
     s2 = pd.Series(df2_f["delta"].values, index=df2_f["repeat length"].values)
     common = s1.index.intersection(s2.index)
@@ -223,7 +223,7 @@ def generate_delta_plot(dataframe, output_path="delta_plot.pdf", bin_size=2, tit
         ax1.set_xlim(30, 200)
         ax1.legend()
 
-        # Description block
+        # Description block - needs updating, still very crude for now
         description_title = "Description of Plot:"
         description_body = (
             "The delta plot shows the average change in repeat size between Day 0 and treated. "
@@ -238,7 +238,7 @@ def generate_delta_plot(dataframe, output_path="delta_plot.pdf", bin_size=2, tit
         pdf.savefig(fig)
         plt.close(fig)
 
-        # -------- Page 2: Day0/treated overlay (unchanged) --------
+        # -------- Page 2: Day0/treated overlay --------
         fig2, ax2 = plt.subplots(figsize=(8.27, 4))
         if "Day0_avg" in df1 and "treated_avg" in df1:
             ax2.plot(df1["repeat length"], df1["Day0_avg"], label="Day 0 (Set 1)")
@@ -256,7 +256,7 @@ def generate_delta_plot(dataframe, output_path="delta_plot.pdf", bin_size=2, tit
         plt.close(fig2)
 
 
-        # Quick Day0/treated average overlay
+        # Day0/treated average overlay
         hist_fig = plot_histogram_comparison(dataframe)
         pdf.savefig(hist_fig)
         plt.close(hist_fig)
@@ -465,7 +465,7 @@ repeat-detector \
 
             self.log(f"✅ Finished. Day0 files: {len(produced_day0)}, treated files: {len(produced_treated)}")
             # Publish to analysis tab
-            from pubsub import pub  # if you’ve switched to pypubsub
+            from pubsub import pub  # ensure pubsub is imported
             wx.CallAfter(pub.sendMessage, "histograms_ready",
                         day0=produced_day0, treated=produced_treated,
                         day0_dir=day0_dir, treated_dir=treated_dir)
@@ -515,7 +515,6 @@ repeat-detector \
             plot_path = f"{os.path.splitext(histogram_path)[0]}_plot.png"
             canvas = FigureCanvasAgg(fig)
             fig.savefig(plot_path)
-            # (no plt.close needed)
 
             # Write results
             output_dir = os.path.dirname(histogram_path)
@@ -542,7 +541,7 @@ repeat-detector \
 
 
 # -------------------------
-# TAB 2: Analyze (your existing GUI refactored into a Panel)
+# TAB 2: Analyze histograms
 # -------------------------
 class AnalyzeHistogramsPanel(wx.Panel):
     def __init__(self, parent):
@@ -599,7 +598,7 @@ class AnalyzeHistogramsPanel(wx.Panel):
         self.plot_panel = wx.Panel(self, size=(550, 300))
         self.plot_canvas = None
 
-        # Layout (same as your working frame)
+        # Layout
         vbox.Add(wx.StaticText(self, label="Plot Title:"), 0, wx.LEFT | wx.TOP, 10)
         vbox.Add(self.title_txt, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
 
