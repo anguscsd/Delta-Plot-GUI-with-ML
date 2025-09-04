@@ -1,6 +1,6 @@
 # Repeat Expansion Analysis GUI
 
-## Overview
+### Overview
 
 This repository contains a Python-based graphical user interface (GUI) designed to streamline the analysis of CAG repeat expansions, with a focus on Huntington’s disease datasets. The application integrates the Repeat Detector (RD) workflow within a user-friendly environment, enabling users to generate histograms, calculate instability metrics, and produce publication-ready delta plots without requiring command-line interaction or coding experience.
 
