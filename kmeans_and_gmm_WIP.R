@@ -4,11 +4,11 @@ test_folder  <- "/Users/angusdixon/masters/met591_diss/all_data/ML0708/test_data
 
 method        <- "gmm"            # "gmm" (mclust) or "kmeans"
 K             <- 3                # used if auto_select_K = FALSE
-auto_select_K <- TRUE             # for GMM: let mclust choose K by BIC (range below)
+auto_select_K <- TRUE             # for GMM: let mclust choose K by BIC (range below) (k-means = TRUE)
 
-bin_width <- 1                    # repeat-length bin size
-tau       <- 0.0075               # proxy threshold for Δ labels (bin-level ROC)
-smooth_k  <- 5                    # small pre-smoothing for plots only (rolling mean)
+bin_width <- 1                    # repeat-length bin size (k-means = 1)
+tau       <- 0.0075               # proxy threshold for Δ labels (bin-level ROC) (k-means = 0.001)
+smooth_k  <- 5                    # small pre-smoothing for plots only (rolling mean) (k-means = 5)
 
 set.seed(42)
 
