@@ -1,3 +1,4 @@
+# Proof of concept while developing ideas for this pipeline
 import os
 import glob
 import pandas as pd
